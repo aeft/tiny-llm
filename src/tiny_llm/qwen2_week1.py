@@ -113,22 +113,123 @@ class Qwen2TransformerBlock:
         max_seq_len: int = 32768,
         theta: int = 1000000,
     ):
-        pass
+        self.num_attention_heads = num_attention_heads
+        self.num_kv_heads = num_kv_heads
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.rms_norm_eps = rms_norm_eps
+        self.wq = wq
+        self.wk = wk
+        self.wv = wv
+        self.wo = wo
+        self.bq = bq
+        self.bk = bk
+        self.bv = bv
+        self.w_gate = w_gate
+        self.w_up = w_up
+        self.w_down = w_down
+        self.w_input_layernorm = w_input_layernorm
+        self.w_post_attention_layernorm = w_post_attention_layernorm
+        self.max_seq_len = max_seq_len
+        self.theta = theta
+
+        self.input_layernorm = RMSNorm(hidden_size, w_input_layernorm, eps=rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(hidden_size, w_post_attention_layernorm, eps=rms_norm_eps)
+        self.self_attn = Qwen2MultiHeadAttention(
+            hidden_size=hidden_size,
+            num_heads=num_attention_heads,
+            num_kv_heads=num_kv_heads,
+            wq=wq,
+            wk=wk,
+            wv=wv,
+            wo=wo,
+            bq=bq,
+            bk=bk,
+            bv=bv,
+            max_seq_len=max_seq_len,
+            theta=theta,
+        )
+        self.mlp = Qwen2MLP(hidden_size, intermediate_size, w_gate, w_up, w_down)
 
     def __call__(
         self,
         x: mx.array,
         mask: mx.array | str | None = None,
     ) -> mx.array:
-        pass
+        x_norm = self.input_layernorm(x)
+        x_attn = self.self_attn(x_norm, mask)
+        x = x + x_attn
+        x_norm = self.post_attention_layernorm(x)
+        x_mlp = self.mlp(x_norm)
+        x = x + x_mlp
+        return x
 
 
 class Qwen2ModelWeek1:
     def __init__(self, mlx_model: Any):
-        pass
+        self.mlx_model = mlx_model
 
+        self.embedding = Embedding(
+            vocab_size=mlx_model.args.vocab_size,
+            embedding_dim=mlx_model.args.hidden_size,
+            weight=dequantize_linear(mlx_model.model.embed_tokens),
+        )
+
+        self.transformer_blocks = []
+        for i in range(mlx_model.args.num_hidden_layers):
+            wq = dequantize_linear(mlx_model.model.layers[i].self_attn.q_proj)
+            wk = dequantize_linear(mlx_model.model.layers[i].self_attn.k_proj)
+            wv = dequantize_linear(mlx_model.model.layers[i].self_attn.v_proj)
+            wo = dequantize_linear(mlx_model.model.layers[i].self_attn.o_proj)
+            w_gate = dequantize_linear(mlx_model.model.layers[i].mlp.gate_proj)
+            w_up = dequantize_linear(mlx_model.model.layers[i].mlp.up_proj)
+            w_down = dequantize_linear(mlx_model.model.layers[i].mlp.down_proj)
+            w_input_layernorm = mlx_model.model.layers[i].input_layernorm.weight
+            w_post_attention_layernorm = mlx_model.model.layers[i].post_attention_layernorm.weight
+            transformer_block = Qwen2TransformerBlock(
+                num_attention_heads=mlx_model.args.num_attention_heads,
+                num_kv_heads=mlx_model.args.num_key_value_heads,
+                hidden_size=mlx_model.args.hidden_size,
+                intermediate_size=mlx_model.args.intermediate_size,
+                rms_norm_eps=mlx_model.args.rms_norm_eps,
+                wq=wq,
+                wk=wk,
+                wv=wv,
+                wo=wo,
+                bq=mlx_model.model.layers[i].self_attn.q_proj.bias,
+                bk=mlx_model.model.layers[i].self_attn.k_proj.bias,
+                bv=mlx_model.model.layers[i].self_attn.v_proj.bias,
+                w_gate=w_gate,
+                w_up=w_up,
+                w_down=w_down,
+                w_input_layernorm=w_input_layernorm,
+                w_post_attention_layernorm=w_post_attention_layernorm,
+                max_seq_len=mlx_model.args.max_position_embeddings,
+                theta=mlx_model.args.rope_theta,
+            )
+            self.transformer_blocks.append(transformer_block)
+
+        self.norm = RMSNorm(
+            mlx_model.args.hidden_size,
+            weight=mlx_model.model.norm.weight,
+            eps=mlx_model.args.rms_norm_eps,
+        )
+
+        if not mlx_model.args.tie_word_embeddings:
+            self.w_lm_head = dequantize_linear(mlx_model.lm_head)
+        else:
+            self.w_lm_head = None
+    
     def __call__(
         self,
         inputs: mx.array,
     ) -> mx.array:
-        pass
+        h = self.embedding(inputs)
+        for layer in self.transformer_blocks:
+            h = layer(h, "causal")
+        h = self.norm(h)
+        if self.w_lm_head is not None:
+            return linear(h, self.w_lm_head)
+        else:
+            return self.embedding.as_linear(h)
+
