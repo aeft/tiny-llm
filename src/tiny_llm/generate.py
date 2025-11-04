@@ -12,7 +12,23 @@ def simple_generate(
     sampler: Callable[[mx.array], mx.array] | None,
 ) -> str:
     def _step(model, y):
-        pass
+        output_logits = model(y)
+        logits = output_logits[:, -1, :]
+        return sampler(logits)
+    
+    tokens = mx.array(tokenizer.encode(prompt))[None, :]
+    detokenizer = tokenizer.detokenizer
+    detokenizer.reset()
+
+    while True:
+        next_token = _step(model, tokens)[None, :]
+        tokens = mx.concat([tokens, next_token], axis=1)
+        if next_token.item() == tokenizer.eos_token_id:
+            break
+        detokenizer.add_token(next_token.item())
+    detokenizer.finalize()
+    print(detokenizer.text)
+    return detokenizer.text
 
 
 def simple_generate_with_kv_cache(
