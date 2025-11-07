@@ -1,8 +1,11 @@
 import mlx.core as mx
 from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+from tiny_llm.kv_cache import TinyKvFullCache
 from .qwen2_week1 import Qwen2ModelWeek1
 from .qwen2_week2 import Qwen2ModelWeek2
 from typing import Callable
+import time
 
 
 def simple_generate(
@@ -16,6 +19,7 @@ def simple_generate(
         logits = output_logits[:, -1, :]
         return sampler(logits)
     
+    start_time = time.time()
     tokens = mx.array(tokenizer.encode(prompt))[None, :]
     detokenizer = tokenizer.detokenizer
     detokenizer.reset()
@@ -27,7 +31,9 @@ def simple_generate(
             break
         detokenizer.add_token(next_token.item())
     detokenizer.finalize()
+    end_time = time.time()
     print(detokenizer.text)
+    print(f"\n[Inference Time] {end_time - start_time:.3f}s")
     return detokenizer.text
 
 
@@ -35,7 +41,30 @@ def simple_generate_with_kv_cache(
     model: Qwen2ModelWeek2, tokenizer: TokenizerWrapper, prompt: str
 ) -> str:
     def _step(model, y, offset, kv_cache):
-        pass
+        output_logits = model(y, offset, kv_cache)
+        logits = output_logits[:, -1, :]
+        return mx.argmax(logits, axis=-1) # greedy sampling
+    
+    start_time = time.time()
+    kv_cache = [TinyKvFullCache() for _ in range(model.num_hidden_layers)]
+    tokens = mx.array(tokenizer.encode(prompt))[None, :]
+    detokenizer = tokenizer.detokenizer
+    detokenizer.reset()
+    offset = 0
+
+    while True:
+        next_token = _step(model, tokens, offset, kv_cache)[None, :]
+        offset += tokens.shape[1]
+        tokens = next_token
+        if next_token.item() == tokenizer.eos_token_id:
+            break
+        detokenizer.add_token(next_token.item())
+
+    detokenizer.finalize()
+    end_time = time.time()
+    print(detokenizer.text)
+    print(f"\n[Inference Time] {end_time - start_time:.3f}s")
+    return detokenizer.text
 
 
 def speculative_generate(

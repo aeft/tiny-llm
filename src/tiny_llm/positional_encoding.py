@@ -38,18 +38,26 @@ class RoPE:
         self, x: mx.array, offset: list[slice] | slice | None = None
     ) -> mx.array:
         N, S, H, D = x.shape
-        if offset is None:
-            cos_basis = self.cos_freqs[:S, :]    # (S, half)
-            sin_basis = self.sin_freqs[:S, :]    # (S, half)
-        else:
-            assert isinstance(offset, slice)
-            start, stop = offset.start, offset.stop
-            assert stop - start == S, f"offset must be of length {S}"
-            cos_basis = self.cos_freqs[start:stop, :]
-            sin_basis = self.sin_freqs[start:stop, :]
-        
-        cos_basis = cos_basis.reshape(1, S, 1, self.half_dims)
-        sin_basis = sin_basis.reshape(1, S, 1, self.half_dims)
+
+        if offset is not None:
+            if isinstance(offset, slice):
+                assert offset.stop - offset.start == S, f"offset must be of length {S}"
+            elif isinstance(offset, list):
+                assert len(offset) == N, (
+                    f"offsets must have the same length as batch size {N}"
+                )
+                for o in offset:
+                    assert o.stop - o.start == S, f"offset must be of length {S}"
+                offset = mx.array([list(range(i.start, i.stop)) for i in offset])
+        cos_basis = (
+            self.cos_freqs[:S, :] if offset is None else self.cos_freqs[offset, :]
+        )
+        sin_basis = (
+            self.sin_freqs[:S, :] if offset is None else self.sin_freqs[offset, :]
+        )
+
+        cos_basis = cos_basis.reshape(-1, S, 1, self.half_dims)
+        sin_basis = sin_basis.reshape(-1, S, 1, self.half_dims)
         
         if self.traditional:
             x = x.reshape(N, S, H, self.half_dims, 2)
@@ -68,4 +76,3 @@ class RoPE:
             y = y.reshape(N, S, H, D)
         return y.astype(x.dtype)
         
-
