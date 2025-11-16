@@ -3,6 +3,8 @@ import mlx.core as mx
 import argparse
 import random
 
+from tiny_llm import simple_generate, simple_generate_with_kv_cache
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", type=str, default="qwen2-0.5b")
 
@@ -40,7 +42,11 @@ parser.add_argument("--batch-size", type=int, default=5)
 parser.add_argument("--prefill-step", type=int, default=128)
 parser.add_argument("--enable-flash-attn", action="store_true")
 parser.add_argument("--enable-thinking", action="store_true")
+parser.add_argument("--validation", action="store_true", default=False) # validate the results against the single generation
+parser.add_argument("--count", type=int, default=len(prompts))
 args = parser.parse_args()
+
+prompts = prompts[:args.count]
 
 if args.solution == "tiny_llm":
     print("Using your tiny_llm solution")
@@ -80,11 +86,33 @@ with mx.stream(mx.gpu if args.device == "gpu" else mx.cpu):
     result = batch_generate(
         tiny_llm_model,
         tokenizer,
-        encoded_prompts,
+        encoded_prompts.copy(),
         batch_size=args.batch_size,
         prefill_step=args.prefill_step,
     )
     for prompt_idx, text in result:
         print(f"--- {prompt_idx} ---")
+
         print(f"Q: {prompts[prompt_idx]}")
         print(f"A: {text}")
+
+        if args.validation:
+            # result = simple_generate_with_kv_cache(
+            #     tiny_llm_model,
+            #     tokenizer,
+            #     encoded_prompts[prompt_idx],
+            # )
+            result = simple_generate(
+                models.dispatch_model(args.model, mlx_model, week=1),
+                tokenizer,
+                encoded_prompts[prompt_idx],
+                sampler=lambda x: mx.argmax(x, axis=-1),
+            )
+            if result != text:
+                print(f"Validation failed for prompt {prompt_idx}")
+                print(f"Expected: {result}")
+                print(f"Got: {text}")
+                exit(1)
+
+    if args.validation:
+        print(f"Validation passed for {args.count} prompts")

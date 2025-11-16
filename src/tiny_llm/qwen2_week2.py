@@ -6,7 +6,7 @@ from .positional_encoding import RoPE
 from typing import Any
 from .embedding import Embedding
 from .quantize import dequantize_linear, QuantizedWeights
-from .kv_cache import TinyKvCache, TinyKvFullCache
+from .kv_cache import TinyKvCache
 
 
 class Qwen2MultiHeadAttention:
@@ -45,7 +45,7 @@ class Qwen2MultiHeadAttention:
     def __call__(
         self,
         x: mx.array,
-        offsets: list[int],
+        offsets: int | list[int],
         cache: TinyKvCache,
         mask: mx.array | str | None = None,
     ) -> mx.array:
@@ -62,9 +62,6 @@ class Qwen2MultiHeadAttention:
         projection_v = linear(x, dequantize_linear(self.wv), bias=self.bv).reshape(
             B, L_new, self.num_kv_heads, D)
 
-        # the size of the cached tokens should be the same as the offsets
-        assert offsets == cache.offset, f'offsets: {offsets}, cache.offset: {cache.offset}'
-
         if isinstance(offsets, int):
             offset_slice = [slice(int(offsets), int(offsets + L_new))]
         else:
@@ -78,7 +75,7 @@ class Qwen2MultiHeadAttention:
         projection_k = projection_k.transpose(0, 2, 1, 3)
         projection_v = projection_v.transpose(0, 2, 1, 3)
 
-        projection_k, projection_v = cache.update_and_fetch(projection_k, projection_v)
+        projection_k, projection_v, _, mask = cache.update_and_fetch(projection_k, projection_v, mask_length=L_new, mask=mask)
 
         x = scaled_dot_product_attention_grouped(
             projection_q.astype(mx.float32),
@@ -179,7 +176,7 @@ class Qwen2TransformerBlock:
     def __call__(
         self,
         x: mx.array,
-        offset: int,
+        offset: int | list[int],
         cache: TinyKvCache,
         mask: mx.array | str | None = None,
     ) -> mx.array:
@@ -256,7 +253,7 @@ class Qwen2ModelWeek2:
     def __call__(
         self,
         inputs: mx.array,
-        offset: int,
+        offset: int | list[int],
         cache: list[TinyKvCache],
     ) -> mx.array:
         h = self.embedding(inputs)
@@ -264,6 +261,6 @@ class Qwen2ModelWeek2:
             h = layer(h, offset, cache[i], mask="causal")
         h = self.norm(h)
         if self.w_lm_head is not None:
-            return linear(h, self.w_lm_head)
+            return linear(h, dequantize_linear(self.w_lm_head))
         else:
             return self.embedding.as_linear(h)

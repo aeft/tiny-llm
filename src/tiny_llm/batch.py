@@ -45,7 +45,17 @@ class Request:
         """
         if self.is_prefill_done:
             raise ValueError("prefill called after done")
-        # TODO: in task 4, prefill the full request at once; in task 5, prefill a chunk at a time
+        # Task 4/5: prefill a chunk at a time
+        next_token = _step(self.model,
+            self.prefill_tokens[self.offset:min(self.offset + self.prefill_max_step, self.prefill_tokens.size)][None, :],
+            self.offset,
+            self.kv_cache)
+        
+        self.offset = min(self.offset + self.prefill_max_step, self.prefill_tokens.size)
+        if self.offset == self.prefill_tokens.size:
+            self.is_prefill_done = True
+            self.next_token = next_token.item()
+            self.decode_done(self.next_token, False)
 
     def decode_done(self, token, update_offset=True):
         if self.is_done:
@@ -53,7 +63,11 @@ class Request:
         if token == self.eos_token_id:
             self.is_done = True
             return
-        # TODO: update the offset and add the token to the detokenizer
+        # Task 4/5: update the offset and add the token to the detokenizer
+        if update_offset:
+            self.offset += 1
+        self.next_token = token
+        self.detokenizer.add_token(token)
 
     def text(self):
         return self.detokenizer.text
@@ -123,6 +137,7 @@ def batch_generate(
         # prefill until no idle slots
         if len(prompts) > 0 and pending_prefill_request is None:
             prompt = prompts.pop(0)
+            print(f'add prefill request {next_request_idx}, prompt: {prompt}')
             pending_prefill_request = Request(
                 model, tokenizer, prompt, prefill_step, next_request_idx
             )
@@ -135,8 +150,19 @@ def batch_generate(
                 pending_prefill_request.try_prefill()
                 made_progress = True
             if pending_prefill_request.is_prefill_done:
-                # Implement this: find an idle slot and add the request to the decode requests
-                pass
+                # Task 4/5: Find an idle slot and add the request to the decode requests
+                for i in range(batch_size):
+                    if is_idle[i]:
+                        is_idle[i] = False
+                        decode_requests[i] = pending_prefill_request
+                        for prefill_cache, batch_cache in zip(
+                            pending_prefill_request.kv_cache, kv_cache
+                        ):
+                            batch_cache.add_request(prefill_cache, i)
+                        made_progress = True
+                        pending_prefill_request = None
+                        break
+
             if made_progress:
                 _print_progress(
                     decode_requests,
@@ -152,13 +178,29 @@ def batch_generate(
         if not all(is_idle):
             next_tokens = []
             offsets = []
-            # TODO: collect the next tokens and offsets from the decode requests
-            next_tokens = _step(model, next_tokens.reshape(-1, 1), offsets, kv_cache)
+            # Task 4/5: Collect the next tokens and offsets from the decode requests
             for i in range(batch_size):
-                # TODO: check if the decode has finished by comparing EOS or the seqlength. If so,
+                if not is_idle[i]:
+                    next_tokens.append(decode_requests[i].next_token)
+                    offsets.append(decode_requests[i].offset)
+                else:
+                    next_tokens.append(0)
+                    offsets.append(0)
+
+            next_tokens = _step(model, mx.array(next_tokens).reshape(-1, 1), offsets, kv_cache)
+            for i in range(batch_size):
+                # Task 4/5: check if the decode has finished by comparing EOS or the seqlength. If so,
                 # remove the request from the decode requests and add the result to the result list;
                 # otherwise, call `decode_done` to update the offset and add the token to the detokenizer
-                pass
+                if is_idle[i]:
+                    continue
+                if next_tokens[i].item() == decode_requests[i].eos_token_id:
+                    kv_cache[i].remove_request(i)
+                    is_idle[i] = True
+                    result.append((decode_requests[i].prompt_idx, decode_requests[i].text()))
+                else:
+                    decode_requests[i].decode_done(next_tokens[i].item())
+
             _print_progress(
                 decode_requests,
                 is_idle,

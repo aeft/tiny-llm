@@ -3,6 +3,8 @@ from typing import Optional
 
 import mlx.core as mx
 
+from tiny_llm.attention import causal_mask
+
 
 class TinyKvCache(ABC):
     @abstractmethod
@@ -47,7 +49,7 @@ class BatchingKvCache(TinyKvCache):
         B, H, S, D = keys.shape
         assert keys.shape == values.shape
         assert S <= self.max_seq_len
-        assert self.HD == (H, D), f"expect {self.HD} but got {H, D}"
+        # assert self.HD == (H, D), f"expect {self.HD} but got {H, D}"
         assert B == self.max_active_requests
         # Step 1: append the result to the cache
         data = []
@@ -71,19 +73,36 @@ class BatchingKvCache(TinyKvCache):
         seq_len = max(map(get_seq_len, data))
 
         # Step 3: generate masks and a single array of keys and values
-        keys = mx.zeros((self.max_active_requests, H, seq_len, D), dtype=key.dtype)
-        values = mx.zeros((self.max_active_requests, H, seq_len, D), dtype=value.dtype)
+        keys = mx.zeros((self.max_active_requests, H, seq_len, D), dtype=keys.dtype)
+        values = mx.zeros((self.max_active_requests, H, seq_len, D), dtype=values.dtype)
         masks = mx.full(
-            (self.max_active_requests, mask_length, seq_len), -mx.inf, dtype=key.dtype
+            (self.max_active_requests, mask_length, seq_len), -mx.inf, dtype=keys.dtype
         )
-        # TODO: generate masks and a single array of keys and values
-        return keys, values, None, masks.reshape(B, 1, mask_length, seq_len)
+
+        # generate masks and a single array of keys and values
+        for b in range(B):
+            if data[b] is None:
+                masks[b, :, :] = causal_mask(mask_length, seq_len, dtype=keys.dtype) # not sure why this is needed
+                continue
+            key, value, S, mask = data[b]
+            keys[b, :, seq_len - S : seq_len, :] = key
+            values[b, :, seq_len - S : seq_len, :] = value
+            if mask is None or mask == "causal":
+                masks[b, :, seq_len - S : seq_len] = causal_mask(
+                    mask_length, S, dtype=keys.dtype
+                )
+            elif isinstance(mask, mx.array):
+                masks[b, :, seq_len - S : seq_len] = mask
+            else:
+                raise NotImplementedError
+
+        return keys, values, seq_len, masks.reshape(B, 1, mask_length, seq_len)
 
     def add_request(self, prefilled: TinyKvCache, id: int):
-        pass
+        self.kv_caches[id] = prefilled
 
     def remove_request(self, id: int):
-        pass
+        self.kv_caches[id] = None
 
 
 class TinyKvFullCache(TinyKvCache):
@@ -103,8 +122,8 @@ class TinyKvFullCache(TinyKvCache):
         if self.key_values is None:
             self.key_values = (key, value)
             self.offset = key.shape[2] # key.shape: Batch, Head, SeqLen, Dim
-            return key, value
+            return key, value, self.offset, mask
         else:
             self.key_values = (mx.concat([self.key_values[0], key], axis=2), mx.concat([self.key_values[1], value], axis=2))
             self.offset += key.shape[2]
-            return self.key_values[0], self.key_values[1]
+            return self.key_values[0], self.key_values[1], self.offset, mask

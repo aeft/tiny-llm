@@ -32,8 +32,9 @@ def simple_generate(
         detokenizer.add_token(next_token.item())
     detokenizer.finalize()
     end_time = time.time()
-    print(detokenizer.text)
-    print(f"\n[Inference Time] {end_time - start_time:.3f}s")
+    print()
+    print(f"[Generated Text] {detokenizer.text}")
+    print(f"[Inference Time] {end_time - start_time:.3f}s")
     return detokenizer.text
 
 
@@ -62,8 +63,9 @@ def simple_generate_with_kv_cache(
 
     detokenizer.finalize()
     end_time = time.time()
-    print(detokenizer.text)
-    print(f"\n[Inference Time] {end_time - start_time:.3f}s")
+    print()
+    print(f"[Generated Text] {detokenizer.text}")
+    print(f"[Inference Time] {end_time - start_time:.3f}s")
     return detokenizer.text
 
 
