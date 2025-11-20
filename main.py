@@ -22,6 +22,14 @@ parser.add_argument("--sampler-top-k", type=int, default=None)
 parser.add_argument("--enable-thinking", action="store_true")
 parser.add_argument("--enable-flash-attn", action="store_true")
 
+parser.add_argument(
+    "--quantized-mode", 
+    type=str, 
+    default="dequantize",
+    choices=["custom", "dequantize", "mlx"],
+    help="Quantized linear implementation: custom (C++), dequantize (expand), mlx (built-in)"
+)
+
 args = parser.parse_args()
 
 use_mlx = False
@@ -34,6 +42,9 @@ if args.solution == "tiny_llm":
         speculative_generate,
         sampler,
     )
+
+    from tiny_llm.quantize import set_quantized_linear_mode
+    set_quantized_linear_mode(args.quantized_mode)
 
 elif args.solution == "tiny_llm_ref" or args.solution == "ref":
     print("Using tiny_llm_ref solution")

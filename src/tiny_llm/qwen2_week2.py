@@ -1,11 +1,11 @@
 import mlx.core as mx
-from .basics import linear, silu
+from .basics import silu
 from .attention import scaled_dot_product_attention_grouped
 from .layer_norm import RMSNorm
 from .positional_encoding import RoPE
 from typing import Any
 from .embedding import Embedding
-from .quantize import dequantize_linear, QuantizedWeights
+from .quantize import dequantize_linear, QuantizedWeights, quantized_linear
 from .kv_cache import TinyKvCache
 
 
@@ -53,13 +53,13 @@ class Qwen2MultiHeadAttention:
         B, L_new, E = x.shape
         D = E // self.num_heads
 
-        projection_q = linear(x, dequantize_linear(self.wq), bias=self.bq).reshape(
+        projection_q = quantized_linear(x, self.wq, bias=self.bq).reshape(
             B, L_new, self.num_heads, D
         )
-        projection_k = linear(x, dequantize_linear(self.wk), bias=self.bk).reshape(
+        projection_k = quantized_linear(x, self.wk, bias=self.bk).reshape(
             B, L_new, self.num_kv_heads, D
         )
-        projection_v = linear(x, dequantize_linear(self.wv), bias=self.bv).reshape(
+        projection_v = quantized_linear(x, self.wv, bias=self.bv).reshape(
             B, L_new, self.num_kv_heads, D)
 
         if isinstance(offsets, int):
@@ -84,7 +84,7 @@ class Qwen2MultiHeadAttention:
             mask=mask,
         ).astype(x.dtype)
         x = x.transpose(0, 2, 1, 3).reshape(B, L_new, self.hidden_size)
-        return linear(x, dequantize_linear(self.wo))
+        return quantized_linear(x, self.wo)
 
 
 
@@ -104,9 +104,9 @@ class Qwen2MLP:
         self.w_down = w_down
 
     def __call__(self, x: mx.array) -> mx.array:
-        gate = linear(x, dequantize_linear(self.w_gate))
-        up = linear(x, dequantize_linear(self.w_up))
-        return linear(silu(gate) * up, dequantize_linear(self.w_down))
+        gate = quantized_linear(x, self.w_gate)
+        up = quantized_linear(x, self.w_up)
+        return quantized_linear(silu(gate) * up, self.w_down)
 
 
 class Qwen2TransformerBlock:
@@ -261,6 +261,6 @@ class Qwen2ModelWeek2:
             h = layer(h, offset, cache[i], mask="causal")
         h = self.norm(h)
         if self.w_lm_head is not None:
-            return linear(h, dequantize_linear(self.w_lm_head))
+            return quantized_linear(h, self.w_lm_head)
         else:
             return self.embedding.as_linear(h)
