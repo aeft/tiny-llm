@@ -1,12 +1,7 @@
 import pytest
 import mlx.core as mx
 from extensions import tiny_llm_ext
-
-
-def assert_allclose(a, b, atol=0.05):
-    """Compare arrays with tolerance"""
-    diff = mx.max(mx.abs(a - b)).item()
-    assert diff < atol, f"Max diff {diff} exceeds tolerance {atol}"
+from .utils import assert_allclose
 
 
 @pytest.fixture
@@ -33,7 +28,7 @@ def test_quantized_matmul_cpu(random_inputs):
     )
     mx.eval(expected)
     
-    assert_allclose(result, expected)
+    assert_allclose(result, expected, precision=mx.float16, rtol=1e-4, atol=1e-4)
     print(f"✅ CPU test passed: {result.shape}")
 
 
@@ -58,5 +53,5 @@ def test_quantized_matmul_gpu(random_inputs):
         )
         mx.eval(expected)
         
-        assert_allclose(result, expected)
+        assert_allclose(result, expected, precision=mx.float16, rtol=1e-4, atol=1e-4)
         print(f"✅ GPU test passed: {result.shape}")

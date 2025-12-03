@@ -1,3 +1,4 @@
+from functools import reduce
 import mlx.core as mx
 from .basics import softmax, linear
 
@@ -102,4 +103,39 @@ def flash_attention(
     scale: float | None = None,
     mask: mx.array | None = None,
 ) -> mx.array:
-    pass
+    from extensions import tiny_llm_ext
+
+    *B, H_q, L, D = query.shape
+    _, H, S, _ = key.shape
+    assert H_q % H == 0, "H_q must be divisible by H"
+
+    N = reduce(lambda x, y: x * y, B, 1) * H_q
+
+    query = query.reshape(N, L, D)
+    key = key.reshape(-1, S, D)
+    value = value.reshape(-1, S, D)
+
+    query = mx.contiguous(query)
+    key = mx.contiguous(key)
+    value = mx.contiguous(value)
+
+    if mask is not None:
+        if mask == "causal":
+            mask = causal_mask(L, S, query.dtype)
+        mask = mx.broadcast_to(mask, (N, L, S))
+        mask = mx.contiguous(mask)
+    else:
+        mask = mx.reshape(
+            mx.broadcast_to(mx.zeros((L, S)), (*B, H_q, L, S)), (N, L, S)
+        ).astype(mx.float32)
+        mask = mx.contiguous(mask)
+    
+    scale = mx.rsqrt(D) if scale is None else mx.array(scale).astype(query.dtype)
+    
+    result = tiny_llm_ext.flash_attention(query, key, value, scale, mask, H_q, H)
+
+    return mx.contiguous(result.reshape(*B, H_q, L, D))
+
+
+
+

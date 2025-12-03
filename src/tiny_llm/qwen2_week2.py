@@ -3,6 +3,7 @@ from .basics import silu
 from .attention import scaled_dot_product_attention_grouped
 from .layer_norm import RMSNorm
 from .positional_encoding import RoPE
+from .attention import flash_attention
 from typing import Any
 from .embedding import Embedding
 from .quantize import dequantize_linear, QuantizedWeights, quantized_linear
@@ -38,9 +39,11 @@ class Qwen2MultiHeadAttention:
         self.bv = bv
         self.max_seq_len = max_seq_len
         self.theta = theta
+        self.head_dim = hidden_size // num_heads
+        self.scale = mx.rsqrt(self.head_dim)
         self.use_flash_attention = use_flash_attention
 
-        self.rope = RoPE(self.hidden_size // self.num_heads, max_seq_len, theta, traditional=False)
+        self.rope = RoPE(self.head_dim, max_seq_len, theta, traditional=False)
 
     def __call__(
         self,
@@ -77,12 +80,22 @@ class Qwen2MultiHeadAttention:
 
         projection_k, projection_v, _, mask = cache.update_and_fetch(projection_k, projection_v, mask_length=L_new, mask=mask)
 
-        x = scaled_dot_product_attention_grouped(
-            projection_q.astype(mx.float32),
-            projection_k.astype(mx.float32),
-            projection_v.astype(mx.float32),
-            mask=mask,
-        ).astype(x.dtype)
+        if self.use_flash_attention:
+            x = flash_attention(
+                projection_q.astype(mx.float32),
+                projection_k.astype(mx.float32),
+                projection_v.astype(mx.float32),
+                scale=self.scale,
+                mask=mask,
+            ).astype(x.dtype)
+        else:
+            x = scaled_dot_product_attention_grouped(
+                projection_q.astype(mx.float32),
+                projection_k.astype(mx.float32),
+                projection_v.astype(mx.float32),
+                mask=mask,
+            ).astype(x.dtype)
+        
         x = x.transpose(0, 2, 1, 3).reshape(B, L_new, self.hidden_size)
         return quantized_linear(x, self.wo)
 

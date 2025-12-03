@@ -33,30 +33,31 @@ def simple_generate(
     detokenizer.finalize()
     end_time = time.time()
     print()
-    print(f"[Generated Text] {detokenizer.text}")
     print(f"[Inference Time] {end_time - start_time:.3f}s")
     return detokenizer.text
 
 
 def simple_generate_with_kv_cache(
-    model: Qwen2ModelWeek2, tokenizer: TokenizerWrapper, prompt: str
+    model: Qwen2ModelWeek2, tokenizer: TokenizerWrapper, prompt: str, max_tokens: int = 100
 ) -> str:
     def _step(model, y, offset, kv_cache):
         output_logits = model(y, offset, kv_cache)
         logits = output_logits[:, -1, :]
         return mx.argmax(logits, axis=-1) # greedy sampling
-    
+
     start_time = time.time()
     kv_cache = [TinyKvFullCache() for _ in range(model.num_hidden_layers)]
     tokens = mx.array(tokenizer.encode(prompt))[None, :]
     detokenizer = tokenizer.detokenizer
     detokenizer.reset()
     offset = 0
+    num_generated = 0
 
-    while True:
+    while num_generated < max_tokens:
         next_token = _step(model, tokens, offset, kv_cache)[None, :]
         offset += tokens.shape[1]
         tokens = next_token
+        num_generated += 1
         if next_token.item() == tokenizer.eos_token_id:
             break
         detokenizer.add_token(next_token.item())
@@ -64,7 +65,6 @@ def simple_generate_with_kv_cache(
     detokenizer.finalize()
     end_time = time.time()
     print()
-    print(f"[Generated Text] {detokenizer.text}")
     print(f"[Inference Time] {end_time - start_time:.3f}s")
     return detokenizer.text
 
